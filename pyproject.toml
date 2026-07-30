@@ -88,7 +88,7 @@ known-first-party = ["event_extract"]
 # ==================== Pytest 配置 ====================
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v --tb=short --strict-markers"
+addopts = "--cov=src/ --cov-report=term --cov-fail-under=80"
 
 # 关键：让 pytest 能找到 src/ 下的模块
 # 告诉 pytest 将项目根目录加入 sys.path，使得 from src.data.ingestion import ... 在测试中能正常工作。
