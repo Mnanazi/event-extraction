@@ -1,50 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
-name = "event-extract"
+name = "event-extraction"
 version = "0.1.0"
-description = "DuEE 1.0 Top10 Event Extraction MVP with BERT+CRF"
+description = "DuEE 1.0 Top10 Event Extraction with RoBERTa+CRF"
 readme = "README.md"
-requires-python = "==3.12.*"
+requires-python = ">=3.12,<3.13"
 license = { text = "MIT" }
 authors = [{ name = "Your Name", email = "you@example.com" }]
 
 # ==================== 核心运行时依赖 ====================
 dependencies = [
-    # 注意: torch 通过 uv source 指定安装源，见下方 [tool.uv.sources]
-    "torch",
-    "transformers",
-    "omegaconf",
-    "datasets",
-    "typing-extensions",
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "omegaconf>=2.3.0",
+    "datasets>=2.14.0",
+    "typing-extensions>=4.7.0",
     "pytorch-crf>=0.7.2",
+    "scikit-learn>=1.3.0",
+    "scipy>=1.18.0",
+    "seqeval>=1.2.2",
+    "python-dotenv>=1.2.2",
+    "matplotlib>=3.11.0",
+    "pillow>=12.0.0",
 ]
 
-# ==================== 可选依赖组 ====================
-[project.optional-dependencies]
-
-# 开发/调试: lint + test + notebook
+# ==================== 依赖分组 ====================
+[dependency-groups]
 dev = [
-    "ruff",
-    "pytest",
+    "ruff>=0.1.0",
+    "pytest>=7.4.0",
+    "pyright[nodejs]>=1.1.411",
+    "mypy>=1.10.0",
+    "pytest-cov>=7.1.0",
+    "nvidia-ml-py>=13.610.43",
+    "black>=23.0.0",
+    "pre-commit>=3.5.0",
+    "skops>=0.14.0",
 ]
 
-# 训练专用: 实验追踪 + 指标计算
 train = [
-    "wandb",
-    "seqeval",          # NER/Event 评估标准库
-    "scikit-learn",     # 混淆矩阵等辅助指标
+    "mlflow>=3.14.0",
+    "psutil>=7.2.2",
 ]
 
-# 推理服务: FastAPI 全家桶
 serve = [
-    "fastapi",
-    "uvicorn[standard]",
-    "pydantic-settings",
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic-settings>=2.1.0",
 ]
 
-# 模型导出 (按需安装，默认不装以节省空间)
 export = [
-    "onnxruntime-gpu",
-    "optimum",
+    "onnxruntime-gpu>=1.16.0",
+    "optimum>=1.14.0",
 ]
 
 # ==================== uv 专属配置 ====================
@@ -55,8 +65,6 @@ extra-index-url = [
 ]
 
 [tool.uv.sources]
-# 🔥 关键: 指定 PyTorch CUDA 12.6 官方索引
-# 避免 uv 从 PyPI 拉取 CPU-only 版本
 torch = { index = "pytorch-cu126" }
 
 [[tool.uv.index]]
@@ -64,66 +72,67 @@ name = "pytorch-cu126"
 url = "https://download.pytorch.org/whl/cu126"
 explicit = true
 
-# ==================== Ruff Linter 配置 ====================
-# 🔥 Pyright 类型检查配置（与 ruff 无关）
-[tool.pyright]
-typeCheckingMode = "basic"          # strict → basic，关闭大量高级类型推断规则
-reportMissingImports = "warning"    # 缺失导入降级为 warning 而非 error
-reportOptionalMemberAccess = "none" # 忽略 Optional 成员访问报错
-reportGeneralTypeIssues = "none"    # 忽略通用类型不匹配
-pythonVersion = "3.12"              # 与项目 Python 版本保持一致
+# 🔥 关键：显式指定 src/ 为包目录（Hatchling 包发现）
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
 
-# Ruff 配置保持不变，仅控制 lint/format
+# ==================== 类型检查配置 ====================
+[tool.pyright]
+typeCheckingMode = "basic"
+reportMissingImports = "warning"
+reportOptionalMemberAccess = "none"
+reportGeneralTypeIssues = "none"
+pythonVersion = "3.12"
+
+[tool.pylance]
+typeCheckingMode = "basic"
+
+[tool.mypy]
+strict = false
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "src.training.trainer"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["torch.*", "transformers.*"]
+ignore_errors = true
+
+# ==================== Ruff 配置 ====================
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W"]  # 不要选 ANN 系列，避免触发类型注解强制检查
-ignore = ["E501"]                     # 行长度由 formatter 处理
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["event_extract"]
+known-first-party = ["event_extraction"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
 
 # ==================== Pytest 配置 ====================
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-v --tb=short --strict-markers"
-
-# 关键：让 pytest 能找到 src/ 下的模块
-# 告诉 pytest 将项目根目录加入 sys.path，使得 from src.data.ingestion import ... 在测试中能正常工作。
-pythonpath = ["."]   
+testpaths = ["tests/unit"]
+addopts = "--cov=src/ --cov-report=term --cov-fail-under=80"
+pythonpath = ["."]
 
 markers = [
     "slow: marks tests as slow",
     "gpu: marks tests requiring GPU",
 ]
 
+# ==================== 其他工具配置 ====================
+[tool.black]
+line-length = 100
+target-version = ["py312"]
 
-# 配置依赖组，便于在不同场景下安装不同的依赖集合
-# 要使用命令 uv sync --group dev --group train，要添加 [dependency-groups] 配置
-[dependency-groups]
-dev = [
-    "ruff",
-    "pytest",
-    "pyright[nodejs]>=1.1.411",
-    "pytest-cov>=7.1.0",
-    "nvidia-ml-py>=13.610.43",
-]
-train = [
-    "wandb",
-    "seqeval",
-    "scikit-learn",
-    "mlflow>=3.14.0",
-    "psutil>=7.2.2",
-]
-
-serve = [
-    "fastapi",
-    "uvicorn[standard]",
-    "pydantic-settings",
-]
-export = [
-    "onnxruntime-gpu",
-    "optimum",
-]
+[tool.isort]
+profile = "black"
+known_first_party = ["event_extraction"]

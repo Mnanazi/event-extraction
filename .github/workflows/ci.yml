@@ -1,0 +1,51 @@
+name: CI Pipeline
+on:
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        run: pip install uv
+      - name: Install dependencies
+        run: uv sync --group dev --group train
+      - name: Run unit tests
+        run: uv run pytest tests/unit/ -v --cov=src/ --cov-report=xml
+
+  code-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        run: pip install uv
+      - name: Install dependencies
+        run: uv sync --group dev
+      - name: Run linting
+        run: |
+          uv run black --check src/ tests/
+          uv run ruff check src/ tests/
+
+  train-test:
+    runs-on: ubuntu-latest
+    if: github.base_ref == 'main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        run: pip install uv
+      - name: Install dependencies
+        run: uv sync --group train
+      - name: Run training smoke test
+        run: uv run python -c "from src.training.trainer import Trainer; print('Trainer import successful')"
+
+  dependency-check:
+    runs-on: ubuntu-latest
+    if: github.base_ref == 'main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        run: pip install uv
+      - name: Check dependency consistency
+        run: uv sync --frozen
