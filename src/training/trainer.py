@@ -1,13 +1,14 @@
-"""企业级训练循环：MLflow + 资源监控 + 增强日志 (Python 3.12+)"""
+"""企业级手写训练循环：MLflow + Modern AMP + Resource Monitoring (Python 3.12+)"""
 
 import logging
 import time
+from pathlib import Path
 
 import mlflow
 import psutil
 import torch
 from omegaconf import DictConfig
-from torch.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast  # 🔥 Modern AMP API
 from torch.utils.data import DataLoader
 
 from src.training.metrics import compute_entity_f1
@@ -24,6 +25,7 @@ class JointBioTrainer:
         cfg: DictConfig,
         device: torch.device,
         id2label: dict[int, str],
+        output_dir: Path,
     ) -> None:
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -31,6 +33,7 @@ class JointBioTrainer:
         self.cfg = cfg
         self.device = device
         self.id2label = id2label
+        self.output_dir = output_dir
 
         # 参数分组差异化学习率
         bert_params = list(model.encoder.parameters())
@@ -43,45 +46,49 @@ class JointBioTrainer:
             weight_decay=cfg.train.weight_decay,
         )
 
-        self.scaler = GradScaler(enabled=cfg.train.fp16)
+        # 🔥 Modern AMP: 指定 device_type
+        self.scaler = GradScaler(device_type="cuda", enabled=cfg.train.fp16)
         self.grad_accum: int = cfg.train.gradient_accumulation_steps
         self.max_grad_norm: float = cfg.train.max_grad_norm
 
-        # 🔥 全局计时器
-        self._run_start_time: float = time.time()
+        # 状态追踪
+        self._train_start_time: float = time.time()
+        self._best_f1: float = 0.0
+        self._global_step: int = 0
 
-    # ─── 资源监控工具方法 ───────────────────────────────
+    # ==================== 资源监控工具 ====================
 
-    def _get_resource_stats(self) -> dict[str, float]:
-        """获取当前 GPU + CPU 资源占用"""
-        stats: dict[str, float] = {
-            "cpu_percent": psutil.cpu_percent(interval=None),
-            "ram_used_gb": round(psutil.virtual_memory().used / (1024**3), 2),
-            "ram_total_gb": round(psutil.virtual_memory().total / (1024**3), 2),
+    @staticmethod
+    def _get_resource_usage() -> dict[str, float | str]:
+        """获取 CPU/RAM/GPU 实时占用"""
+        cpu_percent = psutil.cpu_percent(interval=None)
+        ram = psutil.virtual_memory()
+        ram_gb_used = ram.used / (1024**3)
+        ram_gb_total = ram.total / (1024**3)
+
+        info: dict[str, float | str] = {
+            "cpu_percent": cpu_percent,
+            "ram_used_gb": round(ram_gb_used, 2),
+            "ram_total_gb": round(ram_gb_total, 2),
         }
+
         if torch.cuda.is_available():
-            allocated = torch.cuda.memory_allocated(self.device) / (1024**3)
-            total = torch.cuda.get_device_properties(self.device).total_memory / (1024**3)
-            stats["gpu_allocated_gb"] = round(allocated, 2)
-            stats["gpu_total_gb"] = round(total, 2)
-            stats["gpu_utilization"] = torch.cuda.utilization(self.device)
-        return stats
+            allocated = torch.cuda.memory_allocated() / (1024**3)
+            total = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+            info["gpu_used_gb"] = round(allocated, 2)
+            info["gpu_total_gb"] = round(total, 2)
+            info["gpu_str"] = f"{allocated:.1f}GB/{total:.1f}GB"
+        else:
+            info["gpu_str"] = "N/A"
 
-    def _format_resource_str(self, stats: dict[str, float]) -> str:
-        """格式化资源字符串用于控制台日志"""
-        parts = [f"CPU: {stats['cpu_percent']:.0f}%"]
-        parts.append(f"RAM: {stats['ram_used_gb']:.1f}/{stats['ram_total_gb']:.1f}GB")
-        if "gpu_allocated_gb" in stats:
-            parts.append(
-                f"GPU: {stats['gpu_allocated_gb']:.1f}/{stats['gpu_total_gb']:.1f}GB"
-                f"({stats['gpu_utilization']}%)"
-            )
-        return " | ".join(parts)
+        return info
 
-    def _get_current_lr(self) -> float:
-        return self.optimizer.param_groups[0]["lr"]
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        m, s = divmod(int(seconds), 60)
+        return f"{m}m{s:02d}s"
 
-    # ─── 训练主循环 ─────────────────────────────────────
+    # ==================== 训练核心 ====================
 
     def train_epoch(self, epoch: int) -> dict[str, float]:
         self.model.train()
@@ -92,8 +99,9 @@ class JointBioTrainer:
 
         for step, batch in enumerate(self.train_loader, 1):
             batch_start = time.time()
-            batch = {k: v.to(self.device) for k, v in batch.items()}
+            batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
 
+            # 🔥 Modern AMP autocast
             with autocast("cuda", dtype=torch.float16, enabled=self.cfg.train.fp16):
                 loss = self.model(**batch)
                 loss = loss / self.grad_accum
@@ -105,40 +113,43 @@ class JointBioTrainer:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.max_grad_norm)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
-                self.optimizer.zero_grad()
+                self.optimizer.zero_grad(set_to_none=True)  # 🔥 set_to_none=True 更省显存
 
-                current_loss = loss.item() * self.grad_accum
-                total_loss += current_loss
+                self._global_step += 1
+                total_loss += loss.item() * self.grad_accum
                 step_count += 1
 
-                # 🔥 每 10 个有效步打印 + 上报 MLflow
+                # 每 10 个有效步打印日志
                 if step_count % 10 == 0 or step == num_batches:
+                    resources = self._get_resource_usage()
                     elapsed_step = time.time() - batch_start
                     elapsed_epoch = time.time() - epoch_start
-                    elapsed_total = time.time() - self._run_start_time
-                    resource_stats = self._get_resource_stats()
+                    elapsed_total = time.time() - self._train_start_time
+                    current_lr = self.optimizer.param_groups[0]["lr"]
+                    current_loss = loss.item() * self.grad_accum
 
-                    # 控制台日志
+                    # Console 日志
                     logger.info(
                         f"Epoch {epoch} | Step {step}/{num_batches} | "
-                        f"LR: {self._get_current_lr():.2e} | "
-                        f"TrainLoss: {current_loss:.4f} | "
-                        f"{self._format_resource_str(resource_stats)} | "
-                        f"StepTime: {elapsed_step:.3f}s | "
-                        f"EpochTime: {int(elapsed_epoch // 60)}m{int(elapsed_epoch % 60):02d}s | "
-                        f"TotalTime: {int(elapsed_total // 60)}m{int(elapsed_total % 60):02d}s"
+                        f"LR: {current_lr:.2e} | TrainLoss: {current_loss:.4f} | "
+                        f"GPU: {resources['gpu_str']} | "
+                        f"CPU: {resources['cpu_percent']:.0f}% | "
+                        f"RAM: {resources['ram_used_gb']:.1f}/{resources['ram_total_gb']:.1f}GB | "
+                        f"Time: {elapsed_step:.3f}s/step | "
+                        f"Epoch Time: {self._format_duration(elapsed_epoch)} | "
+                        f"Total Time: {self._format_duration(elapsed_total)}"
                     )
 
-                    # 🔥 MLflow 逐步指标上报
-                    global_step = (epoch - 1) * num_batches + step
+                    # 🔥 MLflow 逐步记录
                     mlflow.log_metrics(
                         {
-                            "train/loss": round(current_loss, 4),
-                            "train/lr": self._get_current_lr(),
-                            "train/step_time_s": round(elapsed_step, 3),
-                            **{f"system/{k}": v for k, v in resource_stats.items()},
+                            "train/loss": current_loss,
+                            "train/lr": current_lr,
+                            "system/gpu_used_gb": resources.get("gpu_used_gb", 0),
+                            "system/cpu_percent": resources["cpu_percent"],
+                            "system/ram_used_gb": resources["ram_used_gb"],
                         },
-                        step=global_step,
+                        step=self._global_step,
                     )
 
         avg_loss = total_loss / max(step_count, 1)
@@ -152,9 +163,9 @@ class JointBioTrainer:
         all_preds: list[list[int]] = []
         all_labels: list[list[int]] = []
 
-        eval_start = time.time()
         for batch in self.val_loader:
-            batch = {k: v.to(self.device) for k, v in batch.items()}
+            batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
+
             with autocast("cuda", dtype=torch.float16, enabled=self.cfg.train.fp16):
                 loss = self.model(**batch)
                 preds = self.model(
@@ -162,24 +173,36 @@ class JointBioTrainer:
                     attention_mask=batch["attention_mask"],
                     labels=None,
                 )
+
             total_loss += loss.item()
             count += 1
             all_preds.extend(preds)
             all_labels.extend(batch["labels"].cpu().tolist())
 
-        eval_time = time.time() - eval_start
         avg_loss = total_loss / max(count, 1)
         f1_metrics = compute_entity_f1(all_preds, all_labels, self.id2label)
 
         result = {
             "val_loss": round(avg_loss, 4),
-            "val_eval_time_s": round(eval_time, 3),
-            **f1_metrics,
+            "val_entity_f1": f1_metrics["entity_f1"],
+            "val_entity_precision": f1_metrics["entity_precision"],
+            "val_entity_recall": f1_metrics["entity_recall"],
         }
 
-        # 🔥 MLflow Epoch 级验证指标上报
+        # 🔥 MLflow 记录验证指标
         mlflow.log_metrics(
             {f"val/{k}": v for k, v in result.items()},
-            step=epoch,
+            step=self._global_step,
         )
+
+        # 🔥 Best Model 保存策略
+        if result["val_entity_f1"] > self._best_f1:
+            self._best_f1 = result["val_entity_f1"]
+            best_path = self.output_dir / "best_model.pt"
+            best_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(self.model.state_dict(), best_path)
+            logger.info(f"✅ New best model saved! ValEntityF1: {self._best_f1:.4f} → {best_path}")
+            # MLflow 记录最佳模型 artifact
+            mlflow.log_artifact(str(best_path))
+
         return result
