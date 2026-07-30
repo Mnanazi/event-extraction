@@ -1,0 +1,102 @@
+# ==================== Python ====================
+# 字节码缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C 扩展编译产物
+*.so
+
+# 分发与打包
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+
+# 类型检查与静态分析
+.pytype/
+.mypy_cache/
+.ruff_cache 
+.pytest_cache/
+.hypothesis/
+
+# ==================== uv / 虚拟环境 ====================
+# uv 创建的虚拟环境
+.venv/
+
+# uv 的 Python 版本文件
+.python-version
+
+# uv 的临时文件
+.uv/
+
+# 注意：uv.lock 需要提交，不要忽略！
+
+# ==================== 预训练模型文件 ====================
+# 预训练模型文件体积大，不提交
+# 保留 pretrained_models 文件夹结构，但忽略其中的所有文件
+pretrained_models/*
+# 确保文件夹本身不被忽略
+!pretrained_models/.gitkeep
+
+# ==================== 数据文件 ====================
+# 原始数据通常体积大且不可再生，建议不提交
+
+# 处理后的中间数据 / 模型输出
+data/processed/
+data/interim/
+outputs/
+artifacts/
+
+# 模型权重与检查点
+models/
+checkpoints/
+*.pt
+*.pth
+*.bin
+
+# ==================== IDE / Editor ====================
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Vim / Emacs
+*.swp
+*.swo
+*~
+
+# ==================== 利用阿里的网页端千问 Qwen3.7-Max 的提问生成项目代码 ====================
+prompts/
+
+# ==================== 配置文件与环境变量 ====================
+# 本地环境配置（如 API keys 等敏感信息）
+.env
+.env.local
+.env.*.local
+
+# 本地覆盖配置
+config.local.yaml
+*.local.yaml
+
+# ==================== 操作系统 ====================
+# Linux
+.*.swp
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ==================== 临时文件 ====================
+tmp.py
+tmp.md
+
+# 忽略所有以 "copy.py" 结尾的文件（如 test_ingestion copy.py、utils copy.py）
+*copy.py
