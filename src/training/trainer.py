@@ -2,7 +2,6 @@
 
 import logging
 import time
-from pathlib import Path
 
 import mlflow
 import psutil
@@ -25,7 +24,7 @@ class JointBioTrainer:
         cfg: DictConfig,
         device: torch.device,
         id2label: dict[int, str],
-        output_dir: Path,
+        output_dir: str | None = None,  # 改为可选参数
     ) -> None:
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -47,7 +46,7 @@ class JointBioTrainer:
         )
 
         # 🔥 Modern AMP: 指定 device_type
-        self.scaler = GradScaler(device_type="cuda", enabled=cfg.train.fp16)
+        self.scaler = GradScaler(device="cuda", enabled=cfg.train.fp16)
         self.grad_accum: int = cfg.train.gradient_accumulation_steps
         self.max_grad_norm: float = cfg.train.max_grad_norm
 
@@ -74,7 +73,7 @@ class JointBioTrainer:
 
         if torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated() / (1024**3)
-            total = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+            total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
             info["gpu_used_gb"] = round(allocated, 2)
             info["gpu_total_gb"] = round(total, 2)
             info["gpu_str"] = f"{allocated:.1f}GB/{total:.1f}GB"

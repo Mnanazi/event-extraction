@@ -32,12 +32,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def get_local_model_dir(model_id: str) -> Path:
-    return LOCAL_PRETRAINED_MODEL_ROOT / model_id
-
-
 def load_tokenizer(model_id: str) -> tuple["TokenizerProtocol", str]:
-    local_model_dir = get_local_model_dir(model_id)
+    local_model_dir = LOCAL_PRETRAINED_MODEL_ROOT / model_id
     load_candidates = [("local", local_model_dir, True), ("remote", model_id, False)]
 
     for source, path, local_only in load_candidates:
@@ -128,6 +124,7 @@ def main() -> None:
         cfg=cfg,
         device=device,
         id2label=id2label,  # 🔥 新增
+        output_dir=cfg.train.output_dir,  # 🔥 补上缺失的参数
     )
     for epoch in range(1, cfg.train.num_epochs + 1):
         train_metrics = trainer.train_epoch(epoch)
